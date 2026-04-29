@@ -1,0 +1,15 @@
+[project]
+name = "intranet-post-runner"
+version = "0.1.0"
+description = "RAC Hub Submit — autonomous skill runner. Picks up pending Drive submissions, cleans dictated text, generates titles/highlights, hands off to the backend for sheet writes."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.73.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+]
+
+[tool.setuptools]
+py-modules = ["intranet_post", "claude_client", "backend_client", "state", "log"]
