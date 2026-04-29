@@ -241,7 +241,10 @@ def _process_one(item: dict[str, Any]) -> str:
 
 def run() -> int:
     """One full run. Returns process exit code (0 success, 1 fatal config error)."""
-    load_dotenv()
+    # override=True: the .env file is the source of truth. Without this, an
+    # empty ANTHROPIC_API_KEY already in the shell environment (Windows
+    # often has these set globally) would silently shadow the file's value.
+    load_dotenv(override=True)
     log.run_start()
 
     # --- Step 1: discover pending submissions
