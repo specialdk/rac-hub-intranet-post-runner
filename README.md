@@ -66,6 +66,16 @@ This is a **consumer of the backend's API contract** — not part of the backend
 
    Check `logs/YYYY-MM-DD.log` for the full transcript of what happened.
 
+## Manual trigger
+
+Three ways to run the runner ad-hoc, in increasing order of effort:
+
+1. **Double-click `run.bat`** from File Explorer. Opens a cmd window, runs the script, prints the last 20 log lines, and pauses so you can read them. Close the window when done. Easiest path during testing.
+2. **From an open terminal** with the venv activated: `python intranet_post.py`. Same as scheduled invocation.
+3. **From Task Scheduler** (once configured): right-click the `RAC intranet-post` task → **Run**. Triggers the same task immediately, doesn't wait for the next hourly tick.
+
+All three do the same thing — they call `GET /skill/pending` and process whatever's queued. State (`state.json`) is shared across manual and scheduled runs, so repeatedly triggering manually doesn't double-process anything (each successful run moves the folder to Processed, removing it from the next pending list).
+
 ## How it works
 
 For each pending submission returned by `GET /skill/pending`:
