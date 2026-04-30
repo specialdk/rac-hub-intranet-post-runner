@@ -49,8 +49,12 @@ def run_end(processed: int, succeeded: int, quarantined: int, skipped: int) -> N
     )
 
 
-def no_pending() -> None:
-    append("no pending submissions")
+def empty_run() -> None:
+    """Single-line heartbeat for runs that found nothing pending and hit no
+    errors. At 15-min cadence with 11 work-hours/day this fires ~30+ times
+    daily — keeping it to one line makes the log scannable. Active runs
+    with real work or errors keep their full multi-line shape."""
+    append("empty run")
 
 
 def processed(folder_name: str, destination: str, row_number: int, title: str, admin_note: str) -> None:

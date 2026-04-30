@@ -245,29 +245,38 @@ def run() -> int:
     # empty ANTHROPIC_API_KEY already in the shell environment (Windows
     # often has these set globally) would silently shadow the file's value.
     load_dotenv(override=True)
-    log.run_start()
 
-    # --- Step 1: discover pending submissions
+    # --- Step 1: discover pending submissions.
+    # No log.run_start() yet — we want to keep empty runs to a single
+    # heartbeat line at 15-min cadence. We only commit to the multi-line
+    # "run started…run complete" shape once we know there's actual work
+    # or an error worth detailing.
     try:
         pending = backend_client.get_pending()
     except backend_client.AuthBackendError as e:
+        log.run_start()
         log.error(str(e))
         return 1
     except backend_client.TransientBackendError as e:
         # Backend unreachable — log and exit; nothing to retry until next run
+        log.run_start()
         log.skipped_transient("(run)", str(e))
         log.run_end(processed=0, succeeded=0, quarantined=0, skipped=0)
         return 0
     except backend_client.PermanentBackendError as e:
+        log.run_start()
         log.error(f"/skill/pending returned a permanent error: {e}")
         return 1
 
     if not pending:
-        log.no_pending()
-        log.run_end(processed=0, succeeded=0, quarantined=0, skipped=0)
-        # Still prune state — the active folder list is empty
+        # Single-line heartbeat — keeps the log scannable at 15-min cadence
+        # while still confirming "the runner ran at this time".
+        log.empty_run()
         state.prune([])
         return 0
+
+    # --- Real work — start the full multi-line log here
+    log.run_start()
 
     # Surface the warning for any folder that's been failing transiently for
     # a long time. (The skill never auto-quarantines on transient errors —
