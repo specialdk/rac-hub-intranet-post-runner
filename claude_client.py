@@ -32,6 +32,27 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class ClaudeRefusalError(Exception):
+    """Raised when Anthropic's safety classifier returns stop_reason=refusal.
+
+    These are deterministic, content-driven verdicts — same submission
+    text → same refusal. Retrying the same input will never recover, so
+    the runner treats this as a permanent error and quarantines the
+    folder rather than incrementing the transient counter forever.
+
+    Real example caught in the wild: a story titled "Office bullying
+    concerns" tripped the safety classifier because the framing read as
+    a real harassment report rather than a story-cleanup task. The
+    submission itself was fine — the model just declined the editorial
+    role for that content. Admin review of the quarantined folder is
+    the right next step.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Reference content — loaded once at module import
 # ---------------------------------------------------------------------------
 
@@ -255,7 +276,10 @@ def _parse(
         output_format=output_format,
     )
     if response.stop_reason == "refusal":
-        raise RuntimeError(
+        # Specific exception class so the runner can distinguish a
+        # deterministic refusal (quarantine target) from a transient
+        # API hiccup (retry target). See ClaudeRefusalError docstring.
+        raise ClaudeRefusalError(
             "Claude refused the request — unusual for editorial cleanup. "
             "Inspect the submission for unexpected content."
         )

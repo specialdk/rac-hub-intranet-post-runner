@@ -90,8 +90,12 @@ def compose_admin_note(
         if action_phrases:
             parts.append(f"Auto-cleaned: {'; '.join(action_phrases)}.")
         else:
-            # cleaned_text differs from input but no counters set — defensive
-            parts.append("Auto-cleaned.")
+            # cleaned_text differs from input but no counters set — rare edge
+            # case (e.g. trailing-whitespace tweak that doesn't fit any of the
+            # named categories). Plain "Auto-cleaned." reads as a stub; this
+            # phrasing tells the admin "yes, the text was touched, but
+            # nothing notable" without overpromising.
+            parts.append("Auto-cleaned with minor edits.")
 
         if title_generated and highlight_generated:
             parts.append("Title and highlight generated.")
@@ -112,6 +116,31 @@ def compose_admin_note(
 # Per-submission flow
 # ---------------------------------------------------------------------------
 
+def _quarantine(folder_id: str, folder_name: str, reason: str) -> str:
+    """Quarantine a folder via the backend, with consistent log + state.
+
+    Returns the outcome string ('quarantined' or 'skipped') so the caller
+    can `return _quarantine(...)` directly. Mirrors the four-arm error
+    handling used by the inline quarantine call for malformed submissions:
+    a transient backend error leaves the folder in place to retry next
+    run; a permanent backend error or unexpected exception logs an error
+    and treats it as skipped (we can't move the folder, so we stop trying
+    for this run and let the next run see the same condition).
+    """
+    try:
+        backend_client.quarantine(folder_id=folder_id, error_text=reason)
+        log.quarantined(folder_name, reason)
+        state.reset_failure(folder_id)
+        return "quarantined"
+    except backend_client.TransientBackendError as e:
+        log.skipped_transient(folder_name, str(e))
+        state.increment_failure(folder_id)
+        return "skipped"
+    except backend_client.BackendError as e:
+        log.error(f"failed to quarantine {folder_name}: {e}")
+        return "skipped"
+
+
 def _process_one(item: dict[str, Any]) -> str:
     """Process one entry from /skill/pending. Returns one of:
       'succeeded'   — full happy path
@@ -119,7 +148,9 @@ def _process_one(item: dict[str, Any]) -> str:
       'skipped'     — transient failure, folder left in place
 
     Internally this also handles the quarantine call when a /skill/pending
-    entry already arrived with an `error` field (malformed submission.json).
+    entry already arrived with an `error` field (malformed submission.json),
+    and treats Claude safety-classifier refusals as permanent (deterministic
+    — same input always refuses, so retrying doesn't help).
     """
     folder_id = item["folder_id"]
     folder_name = item.get("folder_name", folder_id)
@@ -127,26 +158,25 @@ def _process_one(item: dict[str, Any]) -> str:
     # --- Pre-flight: malformed submission.json detected by backend
     if item.get("error"):
         reason = f"{item['error']}: {item.get('message', '')}".strip(": ")
-        try:
-            backend_client.quarantine(folder_id=folder_id, error_text=reason)
-            log.quarantined(folder_name, reason)
-            state.reset_failure(folder_id)
-            return "quarantined"
-        except backend_client.TransientBackendError as e:
-            log.skipped_transient(folder_name, str(e))
-            state.increment_failure(folder_id)
-            return "skipped"
-        except backend_client.BackendError as e:
-            log.error(f"failed to quarantine {folder_name}: {e}")
-            return "skipped"
+        return _quarantine(folder_id, folder_name, reason)
 
     sub = item["submission"]
 
     # --- Step 2b: clean the body text
     try:
         cleaning = claude_client.clean_text(sub["text"])
+    except claude_client.ClaudeRefusalError as e:
+        # Deterministic safety-classifier verdict — retrying the same text
+        # will refuse again. Quarantine immediately so the admin can
+        # inspect the submission rather than letting the runner spin on
+        # this folder forever (the original "office bullying" pile-up).
+        log.warning(
+            f"Claude refused cleaning for {folder_name} — quarantining: {e}"
+        )
+        return _quarantine(folder_id, folder_name, f"Claude refused cleaning: {e}")
     except Exception as e:
-        # Anthropic API failure — usually transient (rate limit, network)
+        # Other Anthropic API failures — typically transient (rate limit,
+        # network, 5xx). Retry on next run.
         log.skipped_transient(folder_name, f"Anthropic API error during cleaning: {e}")
         state.increment_failure(folder_id)
         return "skipped"
@@ -158,6 +188,13 @@ def _process_one(item: dict[str, Any]) -> str:
     if title_was_blank:
         try:
             resolved_title = claude_client.generate_title(cleaning.cleaned_text).title
+        except claude_client.ClaudeRefusalError as e:
+            log.warning(
+                f"Claude refused title generation for {folder_name} — quarantining: {e}"
+            )
+            return _quarantine(
+                folder_id, folder_name, f"Claude refused title generation: {e}"
+            )
         except Exception as e:
             log.skipped_transient(folder_name, f"Anthropic API error during title gen: {e}")
             state.increment_failure(folder_id)
@@ -170,6 +207,13 @@ def _process_one(item: dict[str, Any]) -> str:
             resolved_highlight = claude_client.generate_highlight(
                 cleaning.cleaned_text, resolved_title
             ).highlight
+        except claude_client.ClaudeRefusalError as e:
+            log.warning(
+                f"Claude refused highlight generation for {folder_name} — quarantining: {e}"
+            )
+            return _quarantine(
+                folder_id, folder_name, f"Claude refused highlight generation: {e}"
+            )
         except Exception as e:
             log.skipped_transient(folder_name, f"Anthropic API error during highlight gen: {e}")
             state.increment_failure(folder_id)
